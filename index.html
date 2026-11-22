@@ -1,0 +1,624 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sistema de Informes Cardiológicos</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: #f3f6fa;
+    font-family: Arial, sans-serif;
+    color: #172b45;
+}
+
+header {
+    background: #0f294a;
+    color: white;
+    padding: 20px 25px;
+    font-size: 21px;
+    font-weight: bold;
+}
+
+main {
+    max-width: 1170px;
+    margin: 25px auto;
+    padding: 0 18px 40px;
+}
+
+h1 { font-size: 25px; }
+
+p {
+    color: #53657a;
+    line-height: 1.5;
+}
+
+.panel {
+    background: white;
+    border: 1px solid #d5dfeb;
+    border-radius: 12px;
+    margin: 18px 0;
+    overflow: hidden;
+}
+
+.panel-header {
+    background: #0f294a;
+    color: white;
+    padding: 15px;
+    font-weight: bold;
+}
+
+.panel-body { padding: 18px; }
+
+input[type=file] {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+}
+
+.gallery {
+    display: grid;
+    grid-template-columns:
+        repeat(auto-fill, minmax(155px, 1fr));
+    gap: 13px;
+    margin-top: 17px;
+}
+
+.tile {
+    border: 2px solid #d6dfeb;
+    border-radius: 9px;
+    background: #f8fafc;
+    padding: 8px;
+    text-align: center;
+}
+
+.tile.removed {
+    border: 2px dashed #dc2626;
+    background: #fff1f1;
+}
+
+.thumb {
+    position: relative;
+    min-height: 170px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: white;
+    cursor: pointer;
+}
+
+.thumb canvas {
+    max-width: 100%;
+    max-height: 210px;
+}
+
+.tile.removed canvas {
+    opacity: 0.25;
+    filter: grayscale(1);
+}
+
+.cross {
+    display: none;
+    position: absolute;
+    color: #dc2626;
+    font-size: 75px;
+    font-weight: bold;
+    pointer-events: none;
+}
+
+.tile.removed .cross { display: block; }
+
+.page-label {
+    font-size: 13px;
+    font-weight: bold;
+    margin: 8px 0;
+}
+
+.page-state {
+    font-size: 12px;
+    color: #047857;
+}
+
+.tile.removed .page-state {
+    color: #b42332;
+}
+
+.actions {
+    display: flex;
+    gap: 5px;
+    margin-top: 10px;
+}
+
+.actions button {
+    flex: 1;
+    padding: 8px 4px;
+    border: 1px solid #bbc9d8;
+    border-radius: 6px;
+    background: white;
+    cursor: pointer;
+}
+
+.actions button:disabled {
+    opacity: .3;
+    cursor: default;
+}
+
+.notice {
+    background: #e9f1fb;
+    padding: 15px;
+    border-radius: 8px;
+    margin: 20px 0;
+}
+
+.primary {
+    background: #0f294a;
+    color: rgb(219, 228, 238);
+    width: 100%;
+    padding: 16px;
+    font-size: 16px;
+    font-weight: bold;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.primary:disabled {
+    background: #8ba0b8;
+    cursor: not-allowed;
+}
+
+#resumen {
+    margin: 20px 0;
+    font-weight: bold;
+}
+
+#estado {
+    margin-top: 15px;
+    color: #0d2f4a;
+}
+</style>
+</head>
+
+<body>
+
+<header>Sistema de Informes</header>
+
+<main>
+
+<h1>Unir, ordenar, eliminar y renumerar páginas</h1>
+
+<p>
+Seleccioná los dos archivos PDF.
+Tocá una miniatura para eliminarla o recuperarla.
+Usá las flechas para cambiar el orden.
+La numeración se actualizará automáticamente.
+</p>
+
+<section class="panel">
+    <div class="panel-header">
+        1. PDF del informe médico
+    </div>
+
+    <div class="panel-body">
+        <input type="file"
+               id="archivoInforme"
+               accept=".pdf,application/pdf">
+
+        <p>Estas páginas no se renumeran.</p>
+
+        <div id="paginasInforme" class="gallery"></div>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-header">
+        2. PDF de imágenes de Cardiología
+    </div>
+
+    <div class="panel-body">
+        <input type="file"
+               id="archivoImagenes"
+               accept=".pdf,application/pdf">
+
+        <p>
+        Las páginas conservadas se renumeran
+        automáticamente: 1/N, 2/N, 3/N...
+        </p>
+
+        <div id="paginasImagenes" class="gallery"></div>
+    </div>
+</section>
+
+
+
+<div id="resumen">
+Seleccioná los dos archivos PDF.
+</div>
+
+<button id="generar" class="primary" disabled>
+Unir y descargar PDF final
+</button>
+
+<div id="estado" role="status" aria-live="polite"></div>
+
+</main>
+
+<script>
+"use strict";
+
+const { PDFDocument, StandardFonts, rgb } = PDFLib;
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+"https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const datos = {
+    informe: { bytes: null, pages: [] },
+    imagenes: { bytes: null, pages: [] }
+};
+
+const config = {
+    informe: {
+        input: "archivoInforme",
+        galeria: "paginasInforme"
+    },
+    imagenes: {
+        input: "archivoImagenes",
+        galeria: "paginasImagenes"
+    }
+};
+
+const boton = document.getElementById("generar");
+const estado = document.getElementById("estado");
+const resumen = document.getElementById("resumen");
+
+let procesando = false;
+
+// ACTUALIZAR NUMERACIÓN AUTOMÁTICA
+function actualizar() {
+    const a = datos.informe.pages
+        .filter(p => !p.removed).length;
+
+    const b = datos.imagenes.pages
+        .filter(p => !p.removed).length;
+
+    resumen.textContent =
+        `Informe: ${a} hojas | ` +
+        `Imágenes: ${b} hojas | ` +
+        `Total: ${a + b} páginas`;
+
+    boton.disabled =
+        procesando ||
+        !datos.informe.bytes ||
+        !datos.imagenes.bytes ||
+        a + b === 0;
+}
+
+// CARGAR ARCHIVOS PDF
+async function cargarPDF(tipo) {
+    const archivo = document.getElementById(
+        config[tipo].input
+    ).files[0];
+
+    datos[tipo] = { bytes: null, pages: [] };
+    pintar(tipo);
+    actualizar();
+
+    if (!archivo) return;
+
+    try {
+        estado.textContent = "Cargando PDF...";
+
+        const bytes = new Uint8Array(
+            await archivo.arrayBuffer()
+        );
+
+        const pdf = await pdfjsLib.getDocument({
+            data: bytes.slice()
+        }).promise;
+
+        const paginas = [];
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const pagina = await pdf.getPage(i);
+
+            const vp = pagina.getViewport({ scale: 1 });
+
+            const escala = Math.min(
+                1,
+                175 / vp.width,
+                220 / vp.height
+            );
+
+            const viewport = pagina.getViewport({
+                scale: escala
+            });
+
+            const canvas = document.createElement("canvas");
+
+            canvas.width = Math.ceil(viewport.width);
+            canvas.height = Math.ceil(viewport.height);
+
+            await pagina.render({
+                canvasContext: canvas.getContext("2d"),
+                viewport
+            }).promise;
+
+            paginas.push({
+                num: i,
+                removed: false,
+                canvas
+            });
+        }
+
+        await pdf.destroy();
+
+        datos[tipo].bytes = bytes;
+        datos[tipo].pages = paginas;
+
+        pintar(tipo);
+        actualizar();
+
+        estado.textContent = "PDF cargado correctamente.";
+
+    } catch (error) {
+        console.error(error);
+        estado.textContent = "Error: " + error.message;
+    }
+}
+
+// MOSTRAR MINIATURAS Y ORDENAR HOJAS
+function pintar(tipo) {
+    const galeria = document.getElementById(
+        config[tipo].galeria
+    );
+
+    galeria.replaceChildren();
+
+    const paginas = datos[tipo].pages;
+    const conservadas = paginas.filter(p => !p.removed);
+    const total = conservadas.length;
+
+    paginas.forEach((pagina, indice) => {
+        const tile = document.createElement("div");
+
+        tile.className =
+            "tile" + (pagina.removed ? " removed" : "");
+
+        const thumb = document.createElement("div");
+        thumb.className = "thumb";
+
+        const canvas = document.createElement("canvas");
+        canvas.width = pagina.canvas.width;
+        canvas.height = pagina.canvas.height;
+
+        canvas.getContext("2d").drawImage(
+            pagina.canvas, 0, 0
+        );
+
+        const cross = document.createElement("span");
+        cross.className = "cross";
+        cross.textContent = "×";
+
+        thumb.append(canvas, cross);
+
+        thumb.onclick = () => {
+            pagina.removed = !pagina.removed;
+            pintar(tipo);
+            actualizar();
+        };
+
+        const titulo = document.createElement("div");
+        titulo.className = "page-label";
+
+        if (tipo === "imagenes" && !pagina.removed) {
+            const numero = conservadas.indexOf(pagina) + 1;
+            titulo.textContent =
+                `Cardiología - ${numero}/${total} Page`;
+        } else {
+            titulo.textContent =
+                `Hoja original ${pagina.num}`;
+        }
+
+        const mensaje = document.createElement("div");
+        mensaje.className = "page-state";
+        mensaje.textContent =
+            pagina.removed ? "Se eliminará" : "Se conserva";
+
+        const acciones = document.createElement("div");
+        acciones.className = "actions";
+
+        const anterior = document.createElement("button");
+        anterior.textContent = "←";
+        anterior.disabled = indice === 0;
+
+        anterior.onclick = () => {
+            [paginas[indice - 1], paginas[indice]] =
+            [paginas[indice], paginas[indice - 1]];
+
+            pintar(tipo);
+            actualizar();
+        };
+
+        const eliminar = document.createElement("button");
+        eliminar.textContent =
+            pagina.removed ? "Recuperar" : "Eliminar";
+
+        eliminar.onclick = () => {
+            pagina.removed = !pagina.removed;
+            pintar(tipo);
+            actualizar();
+        };
+
+        const siguiente = document.createElement("button");
+        siguiente.textContent = "→";
+        siguiente.disabled = indice === paginas.length - 1;
+
+        siguiente.onclick = () => {
+            [paginas[indice], paginas[indice + 1]] =
+            [paginas[indice + 1], paginas[indice]];
+
+            pintar(tipo);
+            actualizar();
+        };
+
+        acciones.append(anterior, eliminar, siguiente);
+        tile.append(thumb, titulo, mensaje, acciones);
+        galeria.appendChild(tile);
+    });
+}
+
+// REEMPLAZAR VISUALMENTE NUMERACIÓN ORIGINAL
+function renumerar(pagina, indice, total, fuente) {
+    const w = pagina.getWidth();
+    const h = pagina.getHeight();
+
+    // Recuadro situado cerca del 14% desde arriba.
+    // Ajustado aproximadamente al PDF de ejemplo.
+    const x = w * 0.095;
+    const ancho = w * 0.81;
+    const alto = h * 0.041;
+    const y = h - h * 0.14 - alto;
+
+    pagina.drawRectangle({
+        x, y,
+        width: ancho,
+        height: alto,
+        color: rgb(1, 1, 1),
+        borderColor: rgb(0.1, 0.1, 0.1),
+        borderWidth: 0.8
+    });
+
+    const texto =
+        `Cardiología - ${indice + 1}/${total} Page`;
+
+    let tam = Math.min(18, alto * 0.47);
+
+    while (
+        tam > 7 &&
+        fuente.widthOfTextAtSize(texto, tam) > ancho - 12
+    ) {
+        tam--;
+    }
+
+    const tw = fuente.widthOfTextAtSize(texto, tam);
+
+    pagina.drawText(texto, {
+        x: x + (ancho - tw) / 2,
+        y: y + (alto - tam) / 2 + tam * 0.19,
+        size: tam,
+        font: fuente,
+        color: rgb(0, 0, 0)
+    });
+}
+
+// UNIR Y DESCARGAR PDF
+async function generarPDF() {
+    procesando = true;
+    actualizar();
+
+    estado.textContent = "Generando PDF final...";
+
+    try {
+        const salida = await PDFDocument.create();
+        const fuente = await salida.embedFont(
+            StandardFonts.Helvetica
+        );
+
+        const informe = await PDFDocument.load(
+            datos.informe.bytes
+        );
+
+        const imagenes = await PDFDocument.load(
+            datos.imagenes.bytes
+        );
+
+        const paginasInforme = datos.informe.pages
+            .filter(p => !p.removed);
+
+        const paginasImagenes = datos.imagenes.pages
+            .filter(p => !p.removed);
+
+        // Incorporar páginas del informe
+        for (const p of paginasInforme) {
+            const [pagina] = await salida.copyPages(
+                informe, [p.num - 1]
+            );
+            salida.addPage(pagina);
+        }
+
+        // Incorporar y renumerar imágenes
+        const total = paginasImagenes.length;
+
+        for (let i = 0; i < total; i++) {
+            const p = paginasImagenes[i];
+
+            const [pagina] = await salida.copyPages(
+                imagenes, [p.num - 1]
+            );
+
+            salida.addPage(pagina);
+
+            renumerar(pagina, i, total, fuente);
+        }
+
+        const bytes = await salida.save();
+
+        const blob = new Blob([bytes], {
+            type: "application/pdf"
+        });
+
+        const url = URL.createObjectURL(blob);
+        const enlace = document.createElement("a");
+
+        const fecha = new Date();
+        const sello =
+            fecha.getFullYear() +
+            String(fecha.getMonth() + 1).padStart(2, "0") +
+            String(fecha.getDate()).padStart(2, "0");
+
+        enlace.href = url;
+        enlace.download =
+            `Informe_Cardiologia_${sello}.pdf`;
+
+        document.body.appendChild(enlace);
+        enlace.click();
+        enlace.remove();
+
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+        estado.textContent =
+            "PDF generado y descargado correctamente.";
+
+    } catch (error) {
+        console.error(error);
+        estado.textContent =
+            "Error al generar PDF: " + error.message;
+    } finally {
+        procesando = false;
+        actualizar();
+    }
+}
+
+// EVENTOS
+document.getElementById("archivoInforme")
+    .addEventListener("change", () => cargarPDF("informe"));
+
+document.getElementById("archivoImagenes")
+    .addEventListener("change", () => cargarPDF("imagenes"));
+
+boton.addEventListener("click", generarPDF);
+
+actualizar();
+</script>
+
+</body>
+</html>
+
