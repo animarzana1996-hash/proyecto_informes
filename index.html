@@ -444,6 +444,9 @@ La numeración se actualizará automáticamente.
                accept=".pdf,application/pdf">
 
         <p>Estas páginas no se renumeran.</p>
+        <label for="paciente">Apellido y nombre del paciente</label>
+        <input id="paciente" type="text" autocomplete="off" placeholder="Se detecta automáticamente; verificá o corregí el nombre" style="width:100%;padding:10px;margin-top:6px;border:1px solid #bbc9d8;border-radius:8px;font:inherit">
+        <p>El PDF se guardará con este nombre. Verificá que corresponda al paciente.</p>
 
         <div id="paginasInforme" class="gallery"></div>
     </div>
@@ -509,6 +512,27 @@ const estado = document.getElementById("estado");
 const resumen = document.getElementById("resumen");
 
 let procesando = false;
+const paciente = document.getElementById("paciente");
+paciente.addEventListener("input", actualizar);
+
+function detectarPaciente(lineas) {
+    const etiqueta = /(?:apellido\s*(?:y|,)\s*nombres?|nombres?\s*(?:y|,)\s*apellido|(?:nombre\s+del\s+)?paciente)\s*[:：-]?\s*/i;
+    for (let i = 0; i < lineas.length; i++) {
+        const m = etiqueta.exec(lineas[i]);
+        if (!m) continue;
+        let valor = lineas[i].slice(m.index + m[0].length).trim();
+        if (!valor) valor = (lineas[i+1] || "").trim();
+        valor = valor.split(/\s*(?:DNI|documento|edad|fecha|sexo|obra social|historia cl[ií]nica|m[eé]dico)\s*[:：-]?/i)[0].trim();
+        if (/^[\p{L}][\p{L}\p{M} .,'’-]+$/u.test(valor) && valor.split(/\s+/).length >= 2) return valor;
+    }
+    return "";
+}
+
+function nombreArchivo() {
+    return paciente.value.trim().normalize("NFC")
+        .replace(/[^\p{L}\p{M}\p{N}]+/gu, "_")
+        .replace(/^_+|_+$/g, "").toUpperCase();
+}
 
 // ACTUALIZAR NUMERACIÓN AUTOMÁTICA
 function actualizar() {
@@ -527,7 +551,7 @@ function actualizar() {
         procesando ||
         !datos.informe.bytes ||
         !datos.imagenes.bytes ||
-        a + b === 0;
+        a + b === 0 || !nombreArchivo();
 }
 
 // CARGAR ARCHIVOS PDF
@@ -537,6 +561,7 @@ async function cargarPDF(tipo) {
     ).files[0];
 
     datos[tipo] = { bytes: null, pages: [] };
+    if (tipo === "informe") paciente.value = "";
     pintar(tipo);
     actualizar();
 
@@ -562,10 +587,26 @@ async function cargarPDF(tipo) {
         }
 
         const paginas = [];
+        const lineas = [];
 
         for (let i = 1; i <= pdf.numPages; i++) {
             const pagina = await pdf.getPage(i);
 
+            if (tipo === "informe" && i <= 3) {
+                const contenido = await pagina.getTextContent();
+                let linea = "", anteriorY = null;
+                for (const item of contenido.items) {
+                    if (typeof item.str !== "string") continue;
+                    const y = item.transform[5];
+                    if (linea && anteriorY !== null && Math.abs(y - anteriorY) > 3) {
+                        lineas.push(linea.trim()); linea = "";
+                    }
+                    linea += item.str + " ";
+                    anteriorY = y;
+                    if (item.hasEOL) { lineas.push(linea.trim()); linea = ""; }
+                }
+                if (linea.trim()) lineas.push(linea.trim());
+            }
             const vp = pagina.getViewport({ scale: 1 });
 
             const escala = Math.min(
@@ -588,13 +629,37 @@ async function cargarPDF(tipo) {
                 viewport
             }).promise;
 
+            let rotulo = null;
+            if (tipo === "imagenes") {
+                const tc = await pagina.getTextContent();
+                const items = tc.items.filter(it => typeof it.str === "string" && it.str.trim());
+                for (let j = 0; j < items.length && !rotulo; j++) {
+                    const grupo = [];
+                    for (let k = j; k < Math.min(j + 12, items.length); k++) {
+                        const it = items[k];
+                        if (Math.abs(it.transform[5] - items[j].transform[5]) > 2 || Math.abs(it.transform[1]) > 0.01) break;
+                        grupo.push(it);
+                        const texto = grupo.map(t => t.str).join(" ");
+                        if (/^Cardiolog[ií]a\s*[-–:]?\s*\d+\s*\/\s*\d+\s*p[aá]ginas?$/i.test(texto.trim())) {
+                            const x = Math.min(...grupo.map(t => t.transform[4]));
+                            const y = Math.min(...grupo.map(t => t.transform[5]));
+                            const der = Math.max(...grupo.map(t => t.transform[4] + t.width));
+                            const tam = Math.max(...grupo.map(t => t.height || Math.abs(t.transform[3])));
+                            rotulo = {x, y, ancho: der-x, tam};
+                            break;
+                        }
+                    }
+                }
+            }
             paginas.push({
+                rotulo,
                 num: i,
                 removed: false,
                 canvas
             });
         }
 
+        if (tipo === "informe") paciente.value = detectarPaciente(lineas);
         await pdf.destroy();
 
         datos[tipo].bytes = bytes;
@@ -603,7 +668,9 @@ async function cargarPDF(tipo) {
         pintar(tipo);
         actualizar();
 
-        estado.textContent = `PDF de ${nombreHumano} cargado correctamente.`;
+        estado.textContent = tipo === "informe" && !paciente.value
+            ? "No se pudo detectar el nombre. Ingresalo en el campo del paciente."
+            : `PDF de ${nombreHumano} cargado correctamente.`;
 
     } catch (error) {
         console.error(error);
@@ -720,52 +787,28 @@ function pintar(tipo) {
 }
 
 // REEMPLAZAR VISUALMENTE NUMERACIÓN ORIGINAL
-function renumerar(pagina, indice, total, fuente) {
-    const w = pagina.getWidth();
-    const h = pagina.getHeight();
-
-    // Recuadro situado cerca del 14% desde arriba.
-    // Ajustado aproximadamente al PDF de ejemplo.
-    const x = w * 0.095;
-    const ancho = w * 0.81;
-    const alto = h * 0.041;
-    const y = h - h * 0.14 - alto;
-
-    pagina.drawRectangle({
-        x, y,
-        width: ancho,
-        height: alto,
-        color: rgb(1, 1, 1),
-        borderColor: rgb(0.1, 0.1, 0.1),
-        borderWidth: 0.8
-    });
-
-    const texto =
-        `Cardiología - ${indice + 1}/${total} página` +
-        (total > 1 ? "s" : "");
-
-    let tam = Math.min(18, alto * 0.47);
-
-    while (
-        tam > 7 &&
-        fuente.widthOfTextAtSize(texto, tam) > ancho - 12
-    ) {
-        tam--;
+function renumerar(pagina, indice, total, fuente, rotulo) {
+    if (!rotulo || pagina.getRotation().angle % 360 !== 0) {
+        throw new Error("No se encontró un rótulo de texto compatible en la hoja de imágenes " + (indice + 1) + ". No se modificó el PDF para evitar tapar datos médicos.");
     }
-
-    const tw = fuente.widthOfTextAtSize(texto, tam);
-
+    const {x, y, ancho, tam} = rotulo;
+    const texto = `Cardiología - ${indice + 1}/${total} página${total > 1 ? "s" : ""}`;
+    pagina.drawRectangle({
+        x: x - 0.8, y: y - tam * 0.23,
+        width: ancho + 1.6, height: tam * 1.22,
+        color: rgb(1, 1, 1)
+    });
+    let size = tam;
+    while (size > 4 && fuente.widthOfTextAtSize(texto, size) > ancho) size -= 0.2;
     pagina.drawText(texto, {
-        x: x + (ancho - tw) / 2,
-        y: y + (alto - tam) / 2 + tam * 0.19,
-        size: tam,
-        font: fuente,
-        color: rgb(0, 0, 0)
+        x: x + (ancho - fuente.widthOfTextAtSize(texto, size)) / 2,
+        y, size, font: fuente, color: rgb(0, 0, 0)
     });
 }
 
 // UNIR Y DESCARGAR PDF
 async function generarPDF() {
+    if (!nombreArchivo()) { paciente.focus(); return; }
     procesando = true;
     actualizar();
 
@@ -811,7 +854,7 @@ async function generarPDF() {
 
             salida.addPage(pagina);
 
-            renumerar(pagina, i, total, fuente);
+            renumerar(pagina, i, total, fuente, p.rotulo);
         }
 
         const bytes = await salida.save();
@@ -823,15 +866,8 @@ async function generarPDF() {
         const url = URL.createObjectURL(blob);
         const enlace = document.createElement("a");
 
-        const fecha = new Date();
-        const sello =
-            fecha.getFullYear() +
-            String(fecha.getMonth() + 1).padStart(2, "0") +
-            String(fecha.getDate()).padStart(2, "0");
-
         enlace.href = url;
-        enlace.download =
-            `Informe_Cardiologia_${sello}.pdf`;
+        enlace.download = `${nombreArchivo()}.pdf`;
 
         document.body.appendChild(enlace);
         enlace.click();
