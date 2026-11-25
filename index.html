@@ -787,22 +787,47 @@ function pintar(tipo) {
 }
 
 // REEMPLAZAR VISUALMENTE NUMERACIÓN ORIGINAL
-function renumerar(pagina, indice, total, fuente, rotulo) {
-    if (!rotulo || pagina.getRotation().angle % 360 !== 0) {
-        throw new Error("No se encontró un rótulo de texto compatible en la hoja de imágenes " + (indice + 1) + ". No se modificó el PDF para evitar tapar datos médicos.");
-    }
-    const {x, y, ancho, tam} = rotulo;
-    const texto = `Cardiología - ${indice + 1}/${total} página${total > 1 ? "s" : ""}`;
+function renumerar(pagina, indice, total, fuente) {
+    const w = pagina.getWidth();
+    const h = pagina.getHeight();
+
+    // Recuadro situado cerca del 14% desde arriba.
+    // Ajustado aproximadamente al PDF de ejemplo.
+    const x = w * 0.092;
+    const ancho = w * 0.816;
+    const alto = h * 0.052;
+    const y = h - h * 0.129 - alto;
+
     pagina.drawRectangle({
-        x: x - 0.8, y: y - tam * 0.23,
-        width: ancho + 1.6, height: tam * 1.22,
-        color: rgb(1, 1, 1)
+        x, y,
+        width: ancho,
+        height: alto,
+        color: rgb(1, 1, 1),
+        borderColor: rgb(0.1, 0.1, 0.1),
+        borderWidth: 0.8
     });
-    let size = tam;
-    while (size > 4 && fuente.widthOfTextAtSize(texto, size) > ancho) size -= 0.2;
+
+    const texto =
+        `Cardiología - ${indice + 1}/${total} página` +
+        (total > 1 ? "s" : "");
+
+    let tam = Math.min(18, alto * 0.47);
+
+    while (
+        tam > 7 &&
+        fuente.widthOfTextAtSize(texto, tam) > ancho - 12
+    ) {
+        tam--;
+    }
+
+    const tw = fuente.widthOfTextAtSize(texto, tam);
+
     pagina.drawText(texto, {
-        x: x + (ancho - fuente.widthOfTextAtSize(texto, size)) / 2,
-        y, size, font: fuente, color: rgb(0, 0, 0)
+        x: x + (ancho - tw) / 2,
+        y: y + (alto - tam) / 2 + tam * 0.19,
+        size: tam,
+        font: fuente,
+        color: rgb(0, 0, 0)
     });
 }
 
@@ -854,7 +879,7 @@ async function generarPDF() {
 
             salida.addPage(pagina);
 
-            renumerar(pagina, i, total, fuente, p.rotulo);
+            renumerar(pagina, i, total, fuente);
         }
 
         const bytes = await salida.save();
